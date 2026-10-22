@@ -518,8 +518,88 @@ async function updatePassword(e){
   setTimeout(()=>{ closeAuthModal(); },900);
 }
 
-const LAST_VIEW_KEY = 'qtLastViewState';
+const LAST_VIEW_KEY = 'qtLastViewState_v2';
+const LAST_VIEW_TIME_KEY = 'qtLastViewState_v2_time';
+let __hasRestored = false;
 
+function captureCurrentView(){
+  if(__hasRestored === false && document.visibilityState === 'visible'){
+    // Prothom load e save korbo na, nahole home state save hoye jabe
+  }
+  const state = {
+    view: 'home',
+    scrollY: Math.max(0, window.scrollY || window.pageYOffset || 0),
+    homeSearch: search?.value || '',
+    savedAt: Date.now()
+  };
+  if(grid?.querySelector('.reader') && currentSurahId){
+    state.view = 'reader';
+    state.surahId = currentSurahId;
+    state.ayahSearch = document.getElementById('ayahSearchInput')?.value || '';
+    const active = document.activeElement;
+    const ayah = active?.closest?.('.ayah[data-ayah-index]');
+    if(ayah) state.focusedAyahIndex = Number(ayah.dataset.ayahIndex);
+    if(active?.matches?.('[data-field]')) state.focusedField = active.dataset.field;
+  } else if(grid?.querySelector('.favorites-page')) state.view = 'favorites';
+  else if(grid?.querySelector('.notes-page')) state.view = 'notes';
+  else if(grid?.querySelector('.amal-page')) state.view = 'amal';
+  else if(grid?.querySelector('.today-page')) state.view = 'today';
+  else if(grid?.querySelector('.global-search-page')) state.view = 'global-search';
+
+  try { 
+    localStorage.setItem(LAST_VIEW_KEY, JSON.stringify(state));
+    localStorage.setItem(LAST_VIEW_TIME_KEY, Date.now().toString());
+  } catch(e) {}
+}
+
+function restoreLastView(){
+  if(__hasRestored) return false;
+  let state = null;
+  try {
+    const raw = localStorage.getItem(LAST_VIEW_KEY);
+    const time = parseInt(localStorage.getItem(LAST_VIEW_TIME_KEY) || '0');
+    // 7 diner purono hole restore korbo na
+    if(!raw || (Date.now() - time) > 7*24*60*60*1000) return false;
+    state = JSON.parse(raw);
+  } catch(e) { return false; }
+  if(!state || !state.view) return false;
+
+  __hasRestored = true;
+
+  if(state.view === 'reader' && state.surahId){
+    openSurah(state.surahId);
+    setTimeout(()=>{
+      const ayahSearch = document.getElementById('ayahSearchInput');
+      if(ayahSearch && state.ayahSearch){
+        ayahSearch.value = state.ayahSearch;
+        filterAyahs(state.surahId, state.ayahSearch);
+      }
+    }, 50);
+  } else if(state.view === 'favorites') renderFavorites();
+  else if(state.view === 'notes') renderTadabburNotes();
+  else if(state.view === 'amal') renderMyAmal();
+  else if(state.view === 'today') renderLastTadabbur();
+  else if(state.view === 'global-search'){
+    search.value = state.homeSearch || '';
+    renderGlobalSearch();
+  } else {
+    search.value = state.homeSearch || '';
+    renderHome();
+  }
+
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.scrollTo({top: Math.max(0, Number(state.scrollY) || 0), left: 0, behavior: 'auto'});
+    if(Number.isInteger(state.focusedAyahIndex) && state.view === 'reader'){
+      setTimeout(()=>{
+        const field = document.querySelector(
+          `.ayah[data-ayah-index="${state.focusedAyahIndex}"] [data-field="${state.focusedField || 'tadabbur'}"]`
+        );
+        if(field) field.focus({preventScroll:true});
+      }, 300);
+    }
+  }));
+  return true;
+}
 function captureCurrentView(){
   const state = {
     view: 'home',
@@ -606,7 +686,7 @@ async function initAuth(){
   updateAuthUI();
   if(!supabaseClient){
     setAuthStatus('Supabase configuration is not available. Local mode is active.');
-    restoreLastView();
+    if(!restoreLastView()) renderHome();
     return;
   }
 
@@ -615,10 +695,38 @@ async function initAuth(){
     currentUser=sessionData.session.user;
     const cloudState=await loadCloudData(currentUser);
     if(cloudState==='none') await syncToCloud();
-    renderHome();
   }
   updateAuthUI();
-  restoreLastView();
+  if(!restoreLastView()){
+    renderHome();
+  }
+
+  supabaseClient.auth.onAuthStateChange(async (event, session)=>{
+    currentUser=session?.user||null;
+    updateAuthUI();
+    if(event==='PASSWORD_RECOVERY'){
+      openAuthModal();
+      setAuthMode('reset-password');
+      setAuthStatus('Please choose your new password.');
+      return;
+    }
+    if(event==='INITIAL_SESSION' || event==='TOKEN_REFRESHED' || event==='USER_UPDATED') return;
+
+    if(event==='SIGNED_IN' && currentUser){
+      const cloudState=await loadCloudData(currentUser);
+      if(cloudState==='none') await syncToCloud();
+      if(!__hasRestored && !restoreLastView()){
+        renderHome();
+      }
+    }else if(event==='SIGNED_OUT'){
+      data=loadData();
+      localStorage.removeItem(LAST_VIEW_KEY);
+      localStorage.removeItem(LAST_VIEW_TIME_KEY);
+      __hasRestored = false;
+      renderHome();
+    }
+  });
+}
 
   supabaseClient.auth.onAuthStateChange(async (event, session)=>{
     currentUser=session?.user||null;
